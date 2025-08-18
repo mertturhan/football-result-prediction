@@ -57,6 +57,3 @@ CREATE INDEX IF NOT EXISTS idx_match_date ON match(match_date);
 CREATE INDEX IF NOT EXISTS idx_match_league_season ON match(league_id, season);
 CREATE INDEX IF NOT EXISTS idx_tms_team_date ON team_match_stats(team_id);
 
-'''
-Then I was wondering if I can get the data by running the fbref_scraper. Also, can we add some debuggers in the code to see if they work without any problem
-'''
