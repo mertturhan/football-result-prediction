@@ -1,42 +1,58 @@
-CREATE TABLE IF NOT EXISTS league(
-    league_id   TEXT PRIMARY KEY,   --  e.g. EPL
-    name        TEXT NOT NULL,
-    country     TEXT
+-- leagues
+CREATE TABLE IF NOT EXISTS league (
+  league_id   TEXT PRIMARY KEY,         -- e.g. 'EPL'
+  name        TEXT NOT NULL,
+  country     TEXT
 );
 
+-- teams
 CREATE TABLE IF NOT EXISTS team (
-    team_id     TEXT PRIMARY KEY,   -- e.g. 'manchester-city'
-    name        TEXT NOT NULL,
-    country     TEXT
+  team_id     TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  country     TEXT
 );
+
 
 CREATE TABLE IF NOT EXISTS team_alias (
-    alias       TEXT PRIMARY KEY,
-    team_id     TEXT NOT NULL REFERENCES team(team_id)
+  alias       TEXT PRIMARY KEY,
+  team_id     TEXT NOT NULL REFERENCES team(team_id)
 );
 
+
 CREATE TABLE IF NOT EXISTS match (
-  match_id      TEXT PRIMARY KEY,  -- FBRef id or sha1 code
+  match_id      TEXT PRIMARY KEY,       -- fbref id or your hash
   league_id     TEXT NOT NULL REFERENCES league(league_id),
-  season        TEXT NOT NULL,     -- '2024-2025'
-  match_date    DATE NOT NULL,     -- 'YYYY-MM-DD'
-  status        TEXT NOT NULL,     -- 'played'|'scheduled'
+  season        TEXT NOT NULL,          -- e.g. '2024-2025'
+  match_date    DATE NOT NULL,          -- yyyy-mm-dd
+  status        TEXT NOT NULL,          -- 'played'|'scheduled'
   home_team_id  TEXT NOT NULL REFERENCES team(team_id),
   away_team_id  TEXT NOT NULL REFERENCES team(team_id),
   home_goals    INTEGER,
   away_goals    INTEGER,
+  attendance    INTEGER,
+  venue         TEXT,
   source_url    TEXT,
   loaded_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS team_match_stat_kv (
-  match_id   TEXT NOT NULL REFERENCES match(match_id),
-  team_id    TEXT NOT NULL REFERENCES team(team_id),
-  stat_key   TEXT NOT NULL,        -- e.g. 'xg', 'shots_on_target'
-  stat_val   REAL,                 -- numeric; store text elsewhere if needed
-  PRIMARY KEY (match_id, team_id, stat_key)
+-- per-team stats for each match
+CREATE TABLE IF NOT EXISTS team_match_stats (
+  match_id        TEXT NOT NULL REFERENCES match(match_id),
+  team_id         TEXT NOT NULL REFERENCES team(team_id),
+  is_home         INTEGER NOT NULL CHECK (is_home IN (0,1)),
+  xg              REAL,
+  xga             REAL,
+  shots           INTEGER,
+  shots_on_target INTEGER,
+  corners         INTEGER,
+  fouls           INTEGER,
+  yellow          INTEGER,
+  red             INTEGER,
+  possession      REAL,
+  PRIMARY KEY (match_id, team_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_match_league_season ON match(league_id, season);
+
 CREATE INDEX IF NOT EXISTS idx_match_date ON match(match_date);
-CREATE INDEX IF NOT EXISTS idx_kv_team ON team_match_stat_kv(team_id);
+CREATE INDEX IF NOT EXISTS idx_match_league_season ON match(league_id, season);
+CREATE INDEX IF NOT EXISTS idx_tms_team_date ON team_match_stats(team_id);
