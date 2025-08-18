@@ -1,3 +1,3 @@
 from sqlalchemy import text
-from src.db import engine, upsert_league, upsert_team
+from src.db import get_engine, upsert_league, upsert_team
 

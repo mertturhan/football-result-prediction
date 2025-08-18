@@ -1,3 +1,209 @@
+import json
+from pathlib import Path
+from functools import lru_cache
+from rapidfuzz import process
+import requests
+from bs4 import BeautifulSoup
+
+# mapping official fbref competition names to short aliases
+league_mapping = {
+    "2. Fußball-Bundesliga": "2. Bundesliga",
+    "A-League Men": "A-League",
+    "A-League Women": "A-League",
+    "Allsvenskan": "Allsvenskan",
+    "Austrian Football Bundesliga": "Bundesliga",
+    "Belgian Pro League": "Pro League A",
+    "Belgian Women's Super League": "Belgian WSL",
+    "Campeonato Brasileiro Série A": "Série A",
+    "Campeonato Brasileiro Série B": "Série B",
+    "Canadian Premier League": "CanPL",
+    "Categoría Primera A": "Primera A",
+    "Challenger Pro League": "Pro League B",
+    "Chilean Primera División": "Primera División",
+    "Chinese Football Association Super League": "Super League",
+    "CONCACAF Champions Cup": "CONCACAF CL",
+    "Copa Libertadores": "Libertadores",
+    "Copa Sudamericana": "Sudamericana",
+    "Croatian Football League": "HNL",
+    "Czech First League": "Czech First League",
+    "Danish Superliga": "Danish Superliga",
+    "Danish Women's League": "Kvindeligaen",
+    "División de Fútbol Profesional": "Primera División",
+    "EFL Championship": "Championship",
+    "Ekstraklasa": "Ekstraklasa",
+    "Eliteserien": "Eliteserien",
+    "Eredivisie": "Eredivisie",
+    "Eredivisie Vrouwen": "Eredivisie",
+    "Eerste Divisie": "Eerste Divisie",
+    "FA Women's Super League": "WSL",
+    "FIFA Club World Cup": "Club WC",
+    "First Professional Football League": "First League",
+    "Frauen-Bundesliga": "Bundesliga",
+    "Fußball-Bundesliga": "Bundesliga",
+    "I-League": "I-League",
+    "Indian Super League": "Super League",
+    "J1 League": "J1 League",
+    "J2 League": "J2 League",
+    "K League 1": "K League",
+    "La Liga": "La Liga",
+    "Liga 1 de Fútbol Profesional": "Liga 1",
+    "Liga F": "Liga F",
+    "Liga I": "Liga I",
+    "Liga MX": "Liga MX",
+    "Liga Profesional de Fútbol Argentina": "Liga Argentina",
+    "Liga Profesional Ecuador": "Serie A",
+    "Liga FUTVE": "Liga FUTVE",
+    "Ligue 1": "Ligue 1",
+    "Ligue 2": "Ligue 2",
+    "Major League Soccer": "MLS",
+    "National Women's Soccer League": "NWSL",
+    "Nemzeti Bajnokság I": "NB I",
+    "North American Soccer League": "NASL",
+    "ÖFB Frauen-Bundesliga": "ÖFB Frauenliga",
+    "Paraguayan Primera División": "Primera Div",
+    "Persian Gulf Pro League": "Pro League",
+    "Premier League": "Premier League",
+    "Première Ligue": "D1 Fém",
+    "Primeira Liga": "Primeira Liga",
+    "Russian Premier League": "Premier League",
+    "Saudi Professional League": "Saudi Professional League",
+    "Scottish Championship": "Championship",
+    "Scottish Premiership": "Premiership",
+    "Serie A": "Serie A",
+    "Serie B": "Serie B",
+    "South African Premier Division": "Premier Division",
+    "Spanish Segunda División": "La Liga 2",
+    "Superettan": "Superettan",
+    "Super League Greece": "Super League",
+    "Swiss Super League": "Super Lg",
+    "Swiss Women's Super League": "Swiss WSL",
+    "Süper Lig": "Süper Lig",
+    "Toppserien": "Toppserien",
+    "Ukrainian Premier League": "Premier League",
+    "UEFA Champions League": "UCL",
+    "UEFA Europa Conference League": "UECL",
+    "UEFA Europa League": "UEL",
+    "UEFA Women's Champions League": "UWCL",
+    "Uruguayan Primera División": "Uruguayan Primera División",
+    "USL Championship": "USL Champ",
+    "USL First Division": "USL D-1",
+    "USSF Division 2 Professional League": "D2 Pro League",
+    "Veikkausliiga": "Veikkausliiga",
+    "Venezuelan Primera División": "Liga FUTVE",
+    "Women Empowerment League": "WE League"
+}
 
 
+def load_cache(cache_file: Path) -> dict:
+    if cache_file.exists():
+        return json.loads(cache_file.read_text())
+    return {}
 
+
+def save_cache(data: dict, cache_file: Path) -> None:
+    cache_file.write_text(json.dumps(data))
+
+
+def scrape_league_links():
+    url = "https://fbref.com/en/comps/"
+    response = requests.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    men_league_dict, women_league_dict = {}, {}  # return 2 empty dictionaries
+
+    for table_id in ['comps_1_fa_club_league_senior', 'comps_2_fa_club_league_senior']:
+        # it find the table contatining top tier and second tier information
+        table = soup.find('table', {'id: table_id'})
+        if not table:
+            continue
+        # loop through all rows in the table to extract league names, URLs, and genders
+        for rows in table.find('tbody').find_all('tr'):
+            cols = rows.find_all('td')
+            headers = rows.find_all('th')
+            if not cols or headers:
+                continue
+            gender = cols[0].text.strip()
+            link_tag = headers[0].find('a')
+            if not link_tag:
+                continue
+            league_name = link_tag.text.strip()
+            league_url = 'https://fbref.com' + link_tag['href']
+            target = men_league_dict if gender == 'M' else women_league_dict
+            target[league_name] = {"url": league_url, "gender": gender}
+    return men_league_dict, women_league_dict
+
+
+@lru_cache(maxsize=32)  # Caches the result in memory for 32 different league scrapes
+def get_league_links(cache_file: str):
+    """
+    Function to get league links, using caching to avoid redundant scraping
+    """
+    path = Path(cache_file)
+    data = load_cache(path)
+    if not data:  # if cache is empty, scrape league URLs
+        data = scrape_league_links()
+        save_cache(data, path)
+    return data
+
+
+def get_closest_league(input_league: str, cache_file: str, gender: str):
+    """
+    Fuzzy matching to get the closest league name with the specified gender
+    """
+    men_dict, women_dict = get_league_links(cache_file)  # Fetch the league dictionaries
+    league_dict = men_dict if gender.upper() == 'M' else women_dict  # Select the appropriate dictionary based on gender
+    league_names = list(league_dict.keys())  # List of league names after filtering
+    if not league_names:
+        return None, None
+    match = process.extractOne(input_league, league_names)  # Fuzzy match
+    if match and match[1] > 80:  # Set a threshold for accuracy (80% in this case)
+        name = match[0]
+        return name, league_dict[name]
+    return None, None
+
+
+def scrape_season_links(league_url: str) -> dict:
+    """
+    function to scrape league links from fbref's main competitions page
+    """
+    print(f"League URL: {league_url}")  # debugging
+    response = requests.get(league_url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    seasons_table = soup.find('table', {id: 'seasons'})
+    seasons_dict = {}
+    if not seasons_table:
+        return seasons_dict
+    for row in seasons_table.find('tbody').find_all('th'):
+        link = row.find('a')
+        if link:
+            seasons_dict[link.text.strip()] = 'https://fbref.com' + link['href']
+    return seasons_dict
+
+
+@lru_cache(maxsize=64)
+def get_season_links(cache_file: str, league_url: str) -> dict:
+    """
+    function to get season links, using caching to avoid redundant scraping
+    """
+    path = Path(cache_file)
+    data = load_cache(path)
+    if not data:
+        data = scrape_season_links(league_url)
+        save_cache(data, path)
+    return data
+
+
+def get_scores_and_fixtures_url(competition_url: str):
+    # send a request to competition page
+    response = requests.get(competition_url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    inner_nav = soup.find('div', {'id': 'inner_nav'})
+    if not inner_nav:
+        return None
+    link = inner_nav.find('a', string="Scores & Fixtures")
+    if not link:
+        return None
+    return 'https://fbref.com' + link['href']

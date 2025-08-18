@@ -1,7 +1,17 @@
+from pathlib import Path
 from sqlalchemy import create_engine, text, event
 
-db_path = "data/db/football.sqlite"
-engine = create_engine(f'sqlite:///{db_path}', future=True)
+def get_engine(gender: str = "men"):
+    """Return a SQLite engine for the specified gender's database."""
+    db_path = Path(f"data/db/{gender.lower()}.sqlite")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+
+    @event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys = ON;")
+
+    return engine
 
 def upsert_league(conn, league_id, name, country=None):
     """
@@ -24,7 +34,3 @@ def upsert_team(conn, team_id, name, country=None):
     VALUES (:team_id, :name, :country)
     ON CONFLICT(team_id) DO UPDATE SET name=excluded.name, country=excluded.country
     """), {"team_id": team_id, "name": name, "country": country})
-
-@event.listens_for(engine, "connect")
-def _fk_on(dbapi_conn, _):
-    dbapi_conn.execute("PRAGMA foreign_keys = ON;")
