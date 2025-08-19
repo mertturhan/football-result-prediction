@@ -2,21 +2,27 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import text
+import logging
 from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url
 from src.db import get_engine, upsert_league, upsert_team
 from src.ids import formalize_team_name, produce_match_id
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 START_SEASON_YEAR = 2010
 
 
 def parse_fixtures_table(fixtures_url: str):
     """Return a list of match dicts from a Scores & Fixtures page."""
+    logger.debug("Fetching fixtures from %s", fixtures_url)
     resp = requests.get(fixtures_url)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     table = soup.find("table")
     fixtures = []
     if not table or not table.tbody:
+        logger.warning("No fixtures table found at %s", fixtures_url)
         return fixtures
     for row in table.tbody.find_all("tr"):
         if row.get("class") and "spacer" in row.get("class"):
@@ -41,18 +47,22 @@ def parse_fixtures_table(fixtures_url: str):
             "away_g": int(away_g) if away_g else None,
             "url": report_url,
         })
+    logger.info("Parsed %d fixtures from %s", len(fixtures), fixtures_url)
     return fixtures
 
 
 def scrape_league(league_name: str, gender: str) -> None:
     gender_full = "Men" if gender.upper() == "M" else "Women"
+    logger.info("Scraping league %s for %s", league_name, gender_full)
     cache_root = Path("data/cache") / gender_full
     cache_root.mkdir(parents=True, exist_ok=True)
     leagues_cache = cache_root / "league_links.json"
 
     closest, info = get_closest_league(league_name, str(leagues_cache), gender)
     if not closest:
+        logger.error("Could not find league %s for %s", league_name, gender_full)
         return
+    print(f"Scraping league {closest} ({gender_full})...")
     league_alias = league_mapping.get(closest, closest)
     league_dir = cache_root / league_alias
     league_dir.mkdir(parents=True, exist_ok=True)
@@ -65,11 +75,16 @@ def scrape_league(league_name: str, gender: str) -> None:
         for season_name, season_url in seasons.items():
             start_year = int(season_name.split("-")[0])
             if start_year < START_SEASON_YEAR:
+                logger.debug(
+                    "Skipping season %s with start year %s", season_name, start_year
+                )
                 continue
             fixtures_url = get_scores_and_fixtures_url(season_url)
             if not fixtures_url:
+                logger.warning("No fixtures URL found for season %s", season_name)
                 continue
             fixtures = parse_fixtures_table(fixtures_url)
+            logger.info("Processing %d fixtures for season %s", len(fixtures), season_name)
             for f in fixtures:
                 home_id = formalize_team_name(f["home"])
                 away_id = formalize_team_name(f["away"])
@@ -109,3 +124,4 @@ def scrape_league(league_name: str, gender: str) -> None:
                         "source_url": f["url"],
                     },
                 )
+
