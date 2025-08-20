@@ -48,12 +48,34 @@ START_SEASON_YEAR = 2010
 
 
 def _table_from_comment(driver, wrapper_id: str):
-    """Return a BeautifulSoup table extracted from commented HTML."""
-    wrapper = driver.find_element(By.ID, f"all_{wrapper_id}")
-    html = wrapper.get_attribute("innerHTML")
-    soup = BeautifulSoup(html, "html.parser")
-    comment = next((c for c in soup.children if isinstance(c, Comment)), None)
-    return BeautifulSoup(comment, "html.parser").find("table") if comment else None
+    """Return a BeautifulSoup table extracted from commented HTML.
+
+    Some FBref pages expose tables directly without the ``all_`` wrapper.
+    This helper now checks for both variants and gracefully returns ``None``
+    if neither is found instead of raising an exception that bubbles up
+    through Selenium.
+    """
+
+    # First try the commented-out wrapper (``all_<id>``)
+    wrapper = driver.find_elements(By.ID, f"all_{wrapper_id}")
+    if wrapper:
+        html = wrapper[0].get_attribute("innerHTML")
+        soup = BeautifulSoup(html, "html.parser")
+        comment = next((c for c in soup.children if isinstance(c, Comment)), None)
+        return (
+            BeautifulSoup(comment, "html.parser").find("table")
+            if comment
+            else None
+        )
+
+    # Fall back to a directly exposed table
+    wrapper = driver.find_elements(By.ID, wrapper_id)
+    if wrapper:
+        html = wrapper[0].get_attribute("innerHTML")
+        soup = BeautifulSoup(html, "html.parser")
+        return soup.find("table") or soup
+
+    return None
 
 
 def parse_fixtures_table(fixtures_url: str):
@@ -357,6 +379,12 @@ def scrape_league(league_name: str, gender: str) -> None:
                 )
                 if f["url"]:
                     match_stats = parse_match_report(f["url"])
+                    logger.debug(
+                        "Scraped stats for %s vs %s: %s",
+                        f["home"],
+                        f["away"],
+                        match_stats,
+                    )
                     match_stats["home"]["xga"] = match_stats["away"].get("xg")
                     match_stats["away"]["xga"] = match_stats["home"].get("xg")
                     for is_home, team_id, side in [
