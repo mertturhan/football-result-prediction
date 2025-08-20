@@ -77,8 +77,16 @@ def parse_fixtures_table(fixtures_url: str):
                 continue
             home = row.find_element(By.XPATH, "./*[@data-stat='home_team']").text.strip()
             away = row.find_element(By.XPATH, "./*[@data-stat='away_team']").text.strip()
-            home_g = row.find_element(By.XPATH, "./*[@data-stat='home_score']").text.strip()
-            away_g = row.find_element(By.XPATH, "./*[@data-stat='away_score']").text.strip()
+            try:
+                score_text = row.find_element(By.XPATH, "./*[@data-stat='score']").text.strip()
+                if score_text:
+                    home_g_str, away_g_str = re.split(r"[-–—]", score_text)  # handles hyphen, en dash, em dash
+                    home_g = int(home_g_str)
+                    away_g = int(away_g_str)
+                else:
+                    home_g = away_g = None
+            except NoSuchElementException:
+                home_g = away_g = None
             report_links = row.find_elements(
                 By.XPATH, "./*[@data-stat='match_report']//a"
             )
