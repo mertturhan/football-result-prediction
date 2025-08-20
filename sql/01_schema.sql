@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS team_match_stats (
   pass_accuracy   REAL,
   saves           INTEGER,
   saves_total     INTEGER,
-  saves_pct       REAL,
+  save_pct       REAL,
   yellow          INTEGER,
   red             INTEGER,
   possession      REAL,
