@@ -6,10 +6,16 @@ from rapidfuzz import process
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import logging
+import re
 
 REQUEST_INTERVAL = 10
 _last_request_time = 0.0
+
+logger = logging.getLogger(__name__)
 
 
 def rate_limited_get(driver, url: str) -> None:
@@ -231,6 +237,83 @@ def get_season_links(cache_file: str, league_url: str) -> dict:
     return data
 
 
+def scrape_match_links(fixtures_url: str):
+    """Scrape match info from a Scores & Fixtures page."""
+    logger.debug("Fetching fixtures from %s", fixtures_url)
+    driver = create_driver()
+    fixtures = []
+    try:
+        rate_limited_get(driver, fixtures_url)
+        try:
+            table = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located(
+                    (
+                        By.XPATH,
+                        "//table[contains(@id,'sched')][.//th[@data-stat='home_team']]",
+                    )
+                )
+            )
+        except TimeoutException:
+            logger.warning("No fixtures table found at %s", fixtures_url)
+            return fixtures
+        rows = table.find_elements(
+            By.XPATH,
+            ".//tbody/tr[not(contains(@class,'spacer')) and not(contains(@class,'thead'))]",
+        )
+        for row in rows:
+            try:
+                date_cell = row.find_element(By.XPATH, "./*[@data-stat='date']")
+            except NoSuchElementException:
+                continue
+            match_date = date_cell.text.strip()
+            if not match_date:
+                continue
+            home = row.find_element(By.XPATH, "./*[@data-stat='home_team']").text.strip()
+            away = row.find_element(By.XPATH, "./*[@data-stat='away_team']").text.strip()
+            try:
+                score_text = row.find_element(By.XPATH, "./*[@data-stat='score']").text.strip()
+                if score_text:
+                    home_g_str, away_g_str = re.split(r"[-–—]", score_text)
+                    home_g = int(home_g_str)
+                    away_g = int(away_g_str)
+                else:
+                    home_g = away_g = None
+            except NoSuchElementException:
+                home_g = away_g = None
+            report_links = row.find_elements(
+                By.XPATH, "./*[@data-stat='match_report']//a"
+            )
+            report_url = (
+                report_links[0].get_attribute("href") if report_links else None
+            )
+            fixtures.append(
+                {
+                    "date": match_date,
+                    "home": home,
+                    "away": away,
+                    "home_g": int(home_g) if home_g is not None else None,
+                    "away_g": int(away_g) if away_g is not None else None,
+                    "url": report_url,
+                }
+            )
+    finally:
+        driver.quit()
+    logger.info("Parsed %d fixtures from %s", len(fixtures), fixtures_url)
+    return fixtures
+
+
+def get_match_links(cache_file: str, fixtures_url: str):
+    """Return cached match info for a season."""
+    path = Path(cache_file)
+    data = load_cache(path)
+    if not data:
+        data = scrape_match_links(fixtures_url)
+        save_cache(data, path)
+    return data
+
+
+
+
 def get_scores_and_fixtures_url(competition_url: str):
     driver = create_driver()
     rate_limited_get(driver, competition_url)
@@ -242,4 +325,7 @@ def get_scores_and_fixtures_url(competition_url: str):
         return None
     finally:
         driver.quit()
+
+
+
 
