@@ -2,7 +2,7 @@ from pathlib import Path
 import argparse
 import logging
 from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url, get_league_links, \
-    create_driver, rate_limited_get
+    create_driver, rate_limited_get, get_match_links
 from src.db import get_engine, upsert_league, upsert_team
 from src.ids import formalize_team_name, produce_match_id
 from sqlalchemy import text
@@ -57,7 +57,7 @@ def _table_from_comment(driver, wrapper_id: str):
 
 
 def parse_fixtures_table(fixtures_url: str):
-    """Return a list of match dicts from a Scores & Fixtures page."""
+    #Return a list of match dicts from a Scores & Fixtures page.
     logger.debug("Fetching fixtures from %s", fixtures_url)
     driver = create_driver()
     fixtures = []
@@ -308,8 +308,14 @@ def scrape_league(league_name: str, gender: str) -> None:
             if not fixtures_url:
                 logger.warning("No fixtures URL found for season %s", season_name)
                 continue
-            fixtures = parse_fixtures_table(fixtures_url)
-            logger.info("Processing %d fixtures for season %s", len(fixtures), season_name)
+            #fixtures = parse_fixtures_table(str(matches_cache), fixtures_url)
+            season_dir = league_dir / season_name
+            season_dir.mkdir(parents=True, exist_ok=True)
+            matches_cache = season_dir / "match_links.json"
+            fixtures = get_match_links(str(matches_cache), fixtures_url)
+            logger.info(
+                "Processing %d fixtures for season %s", len(fixtures), season_name
+            )
             for f in fixtures:
                 home_id = formalize_team_name(f["home"])
                 away_id = formalize_team_name(f["away"])
@@ -421,7 +427,7 @@ def scrape_league(league_name: str, gender: str) -> None:
                         )
 
 
-def main(debug: bool = False):
+def main(debug: bool = True):
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
     cache_root = Path("data/cache") / "Men"
