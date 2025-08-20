@@ -144,23 +144,23 @@ def scrape_league_links():
         except NoSuchElementException:
             continue
 
-        rows = table.find_element(By.CSS_SELECTOR, "tbody tr")
+        rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
             headers = row.find_elements(By.TAG_NAME, "th")
-        if not cols or not headers:
-            continue
-        gender = cols[0].text.strip()
+            if not cols or not headers:
+                continue
+            gender = cols[0].text.strip()
 
-        try:
-            link_tag = headers[0].find_element(By.TAG_NAME, "a")
-        except NoSuchElementException:
-            continue
+            try:
+                link_tag = headers[0].find_element(By.TAG_NAME, "a")
+            except NoSuchElementException:
+                continue
 
-        league_name = link_tag.text.strip()
-        league_url = link_tag.get_attribute("href")
-        target = men_league_dict if gender == 'M' else women_league_dict
-        target[league_name] = {"url": league_url, "gender": gender}
+            league_name = link_tag.text.strip()
+            league_url = link_tag.get_attribute("href")
+            target = men_league_dict if gender == 'M' else women_league_dict
+            target[league_name] = {"url": league_url, "gender": gender}
 
     driver.quit()
     return men_league_dict, women_league_dict

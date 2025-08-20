@@ -21,7 +21,19 @@ def parse_fixtures_table(fixtures_url: str):
     fixtures = []
     try:
         rate_limited_get(driver, fixtures_url)
-        table = driver.find_element(By.TAG_NAME, "table")
+        # Scores & Fixtures pages often contain multiple tables (standings,
+        # miscellaneous stats, etc.).  The first table in the DOM may not be
+        # the fixture list, which previously resulted in zero fixtures being
+        # parsed.  Search for the table that actually contains date entries
+        # to ensure we scrape the correct data.
+        table = None
+        for candidate in driver.find_elements(By.TAG_NAME, "table"):
+            if candidate.find_elements(By.CSS_SELECTOR, "th[data-stat='date']"):
+                table = candidate
+                break
+        if table is None:
+            logger.warning("No fixtures table found at %s", fixtures_url)
+            return fixtures
         rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
         for row in rows:
             classes = row.get_attribute("class") or ""
