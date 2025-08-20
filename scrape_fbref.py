@@ -11,6 +11,33 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import re
 
+
+STAT_KEYS = [
+    "xg",
+    "xga",
+    "shots",
+    "shots_on_target",
+    "shots_on_target_pct",
+    "corners",
+    "fouls",
+    "yellow",
+    "red",
+    "possession",
+    "crosses",
+    "touches",
+    "tackles",
+    "interceptions",
+    "aerials_won",
+    "clearances",
+    "long_balls",
+    "passes",
+    "passes_completed",
+    "pass_accuracy",
+    "saves",
+    "saves_total",
+    "save_pct",
+]
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -29,7 +56,7 @@ def parse_fixtures_table(fixtures_url: str):
                 EC.presence_of_element_located(
                     (
                         By.XPATH,
-                        "//table[contains(@id,'sched')][.//th[@data-stat='date']]",
+                        "//table[contains(@id,'sched')][.//th[@data-stat='home_team']]",
                     )
                 )
             )
@@ -37,22 +64,27 @@ def parse_fixtures_table(fixtures_url: str):
             logger.warning("No fixtures table found at %s", fixtures_url)
             return fixtures
         rows = table.find_elements(
-            By.XPATH, ".//tbody/tr[not(contains(@class,'spacer'))]"
+            By.XPATH,
+            ".//tbody/tr[not(contains(@class,'spacer')) and not(contains(@class,'thead'))]",
         )
         for row in rows:
             try:
-                date_cell = row.find_element(By.XPATH, ".//th[@data-stat='date']")
+                date_cell = row.find_element(By.XPATH, "./*[@data-stat='date']")
             except NoSuchElementException:
                 continue
             match_date = date_cell.text.strip()
             if not match_date:
                 continue
-            home = row.find_element(By.XPATH, "./td[@data-stat='home_team']").text.strip()
-            away = row.find_element(By.XPATH, "./td[@data-stat='away_team']").text.strip()
-            home_g = row.find_element(By.XPATH, "./td[@data-stat='home_score']").text.strip()
-            away_g = row.find_element(By.XPATH, "./td[@data-stat='away_score']").text.strip()
-            report_links = row.find_elements(By.XPATH, "./td[@data-stat='match_report']//a")
-            report_url = report_links[0].get_attribute("href") if report_links else None
+            home = row.find_element(By.XPATH, "./*[@data-stat='home_team']").text.strip()
+            away = row.find_element(By.XPATH, "./*[@data-stat='away_team']").text.strip()
+            home_g = row.find_element(By.XPATH, "./*[@data-stat='home_score']").text.strip()
+            away_g = row.find_element(By.XPATH, "./*[@data-stat='away_score']").text.strip()
+            report_links = row.find_elements(
+                By.XPATH, "./*[@data-stat='match_report']//a"
+            )
+            report_url = (
+                report_links[0].get_attribute("href") if report_links else None
+            )
             fixtures.append(
                 {
                     "date": match_date,
@@ -69,32 +101,128 @@ def parse_fixtures_table(fixtures_url: str):
     return fixtures
 
 
-def parse_match_stats(match_url: str):
-    """Scrape detailed team statistics from a match report page."""
-    driver = create_driver()
+def _parse_percent(text: str) -> float | None:
+    match = re.search(r"(\d+(?:\.\d+)?)", text)
+    return float(match.group(1)) if match else None
+
+
+def _parse_ratio(text: str):
+    nums = re.findall(r"\d+", text)
+    made = int(nums[0]) if len(nums) > 0 else None
+    total = int(nums[1]) if len(nums) > 1 else None
+    pct = float(nums[2]) if len(nums) > 2 else (
+        (made / total * 100) if made is not None and total else None
+    )
+    return made, total, pct
+
+
+def _parse_number(text: str) -> int | None:
+    match = re.search(r"\d+", text)
+    return int(match.group(0)) if match else None
+
+
+def parse_match_report(report_url: str):
+    """Return per-team stats from a match report page."""
     stats = {"home": {}, "away": {}}
+    driver = create_driver()
     try:
-        rate_limited_get(driver, match_url)
+        rate_limited_get(driver, report_url)
+        # top stats table
+        try:
+            stats_div = driver.find_element(By.ID, "team_stats")
+            rows = stats_div.find_elements(By.XPATH, ".//table//tr")
+            for row in rows:
+                try:
+                    label = row.find_element(By.TAG_NAME, "th").text.strip().lower()
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) < 2:
+                        continue
+                    home_txt = cells[0].text.strip()
+                    away_txt = cells[-1].text.strip()
+                except NoSuchElementException:
+                    continue
+                if label == "possession":
+                    stats["home"]["possession"] = _parse_percent(home_txt)
+                    stats["away"]["possession"] = _parse_percent(away_txt)
+                elif label == "passing accuracy":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "passes_completed": h_made,
+                            "passes": h_tot,
+                            "pass_accuracy": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "passes_completed": a_made,
+                            "passes": a_tot,
+                            "pass_accuracy": a_pct,
+                        }
+                    )
+                elif label == "shots on target":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "shots_on_target": h_made,
+                            "shots": h_tot,
+                            "shots_on_target_pct": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "shots_on_target": a_made,
+                            "shots": a_tot,
+                            "shots_on_target_pct": a_pct,
+                        }
+                    )
+                elif label == "saves":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "saves": h_made,
+                            "saves_total": h_tot,
+                            "save_pct": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "saves": a_made,
+                            "saves_total": a_tot,
+                            "save_pct": a_pct,
+                        }
+                    )
+        except NoSuchElementException:
+            pass
 
-        def parse_pct(text: str):
-            m = re.search(r"([0-9]+(?:\.[0-9]+)?)%", text)
-            return float(m.group(1)) if m else None
+        # cards
+        try:
+            cards = driver.find_elements(By.CSS_SELECTOR, "#team_stats .cards")
+            if len(cards) >= 2:
+                home_cards, away_cards = cards[0], cards[1]
+                stats["home"]["yellow"] = len(
+                    home_cards.find_elements(By.CLASS_NAME, "yellow_card")
+                )
+                stats["home"]["red"] = len(
+                    home_cards.find_elements(By.CLASS_NAME, "red_card")
+                )
+                stats["away"]["yellow"] = len(
+                    away_cards.find_elements(By.CLASS_NAME, "yellow_card")
+                )
+                stats["away"]["red"] = len(
+                    away_cards.find_elements(By.CLASS_NAME, "red_card")
+                )
+        except Exception:
+            pass
 
-        def parse_of_pct(text: str):
-            nums = [int(n) for n in re.findall(r"\d+", text)]
-            pct = parse_pct(text)
-            if len(nums) >= 2:
-                return nums[0], nums[1], pct
-            elif len(nums) == 1:
-                return nums[0], None, pct
-            return None, None, pct
-
-        def parse_int(text: str):
-            m = re.search(r"\d+", text.replace(",", ""))
-            return int(m.group(0)) if m else None
-
-        def norm(name: str):
-            mapping = {
+        # extra stats table
+        try:
+            extra = driver.find_element(By.ID, "team_stats_extra")
+            rows = extra.find_elements(By.XPATH, ".//tr")
+            label_map = {
                 "fouls": "fouls",
                 "corners": "corners",
                 "crosses": "crosses",
@@ -104,112 +232,27 @@ def parse_match_stats(match_url: str):
                 "aerials won": "aerials_won",
                 "clearances": "clearances",
                 "long balls": "long_balls",
+                "xg": "xg",
             }
-            return mapping.get(name)
-
-        # xG from scorebox
-        try:
-            teams = driver.find_elements(By.CSS_SELECTOR, "div.scorebox div.team")
-            if len(teams) >= 2:
-                hxg_text = teams[0].find_element(
-                    By.XPATH, ".//div[contains(@class,'score_xg')]").text
-                axg_text = teams[1].find_element(
-                    By.XPATH, ".//div[contains(@class,'score_xg')]").text
-                home_xg = float(hxg_text) if hxg_text else None
-                away_xg = float(axg_text) if axg_text else None
-                stats["home"]["xg"] = home_xg
-                stats["home"]["xga"] = away_xg
-                stats["away"]["xg"] = away_xg
-                stats["away"]["xga"] = home_xg
-        except Exception:
-            pass
-
-        # Bars table
-        try:
-            team_stats = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "team_stats"))
-            )
-            for row in team_stats.find_elements(By.XPATH, ".//tbody/tr"):
-                label = row.find_element(By.TAG_NAME, "th").text.strip().lower()
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) < 2:
+            for row in rows:
+                try:
+                    label = row.find_element(By.TAG_NAME, "th").text.strip().lower()
+                    if label not in label_map:
+                        continue
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) < 2:
+                        continue
+                    home_txt = cells[0].text.strip()
+                    away_txt = cells[-1].text.strip()
+                    key = label_map[label]
+                    if key == "xg":
+                        stats["home"][key] = _parse_percent(home_txt)
+                        stats["away"][key] = _parse_percent(away_txt)
+                    else:
+                        stats["home"][key] = _parse_number(home_txt)
+                        stats["away"][key] = _parse_number(away_txt)
+                except NoSuchElementException:
                     continue
-                home_cell, away_cell = cells[0], cells[-1]
-                if label == "possession":
-                    stats["home"]["possession"] = parse_pct(home_cell.text)
-                    stats["away"]["possession"] = parse_pct(away_cell.text)
-                elif label == "passing accuracy":
-                    hc, ht, hp = parse_of_pct(home_cell.text)
-                    ac, at, ap = parse_of_pct(away_cell.text)
-                    stats["home"].update(
-                        {"passes_completed": hc, "passes": ht, "pass_accuracy": hp}
-                    )
-                    stats["away"].update(
-                        {"passes_completed": ac, "passes": at, "pass_accuracy": ap}
-                    )
-                elif label == "shots on target":
-                    hsot, hs, hp = parse_of_pct(home_cell.text)
-                    asot, ass, ap = parse_of_pct(away_cell.text)
-                    stats["home"].update(
-                        {
-                            "shots_on_target": hsot,
-                            "shots": hs,
-                            "shots_on_target_pct": hp,
-                        }
-                    )
-                    stats["away"].update(
-                        {
-                            "shots_on_target": asot,
-                            "shots": ass,
-                            "shots_on_target_pct": ap,
-                        }
-                    )
-                elif label == "saves":
-                    hs, ht, hp = parse_of_pct(home_cell.text)
-                    asv, at, ap = parse_of_pct(away_cell.text)
-                    stats["home"].update(
-                        {"saves": hs, "saves_total": ht, "saves_pct": hp}
-                    )
-                    stats["away"].update(
-                        {"saves": asv, "saves_total": at, "saves_pct": ap}
-                    )
-                elif label == "cards":
-                    stats["home"]["yellow"] = len(
-                        home_cell.find_elements(By.CLASS_NAME, "yellow_card")
-                    )
-                    stats["home"]["red"] = len(
-                        home_cell.find_elements(By.CLASS_NAME, "red_card")
-                    )
-                    stats["away"]["yellow"] = len(
-                        away_cell.find_elements(By.CLASS_NAME, "yellow_card")
-                    )
-                    stats["away"]["red"] = len(
-                        away_cell.find_elements(By.CLASS_NAME, "red_card")
-                    )
-        except TimeoutException:
-            pass
-
-        # Extra stats tables
-        try:
-            extra = driver.find_element(By.ID, "team_stats_extra")
-            tables = extra.find_elements(By.TAG_NAME, "table")
-            if len(tables) >= 2:
-                home_rows = tables[0].find_elements(By.XPATH, ".//tbody/tr")
-                away_rows = tables[1].find_elements(By.XPATH, ".//tbody/tr")
-                for row in home_rows:
-                    name = row.find_element(By.TAG_NAME, "th").text.strip().lower()
-                    key = norm(name)
-                    if key:
-                        stats["home"][key] = parse_int(
-                            row.find_element(By.TAG_NAME, "td").text
-                        )
-                for row in away_rows:
-                    name = row.find_element(By.TAG_NAME, "th").text.strip().lower()
-                    key = norm(name)
-                    if key:
-                        stats["away"][key] = parse_int(
-                            row.find_element(By.TAG_NAME, "td").text
-                        )
         except NoSuchElementException:
             pass
     finally:
@@ -290,53 +333,37 @@ def scrape_league(league_name: str, gender: str) -> None:
                         "source_url": f["url"],
                     },
                 )
-
-                if status == "played" and f.get("url"):
-                    team_stats = parse_match_stats(f["url"])
-                    for is_home, team_id in ((1, home_id), (0, away_id)):
-                        side = "home" if is_home else "away"
-                        s = team_stats.get(side, {})
-                        params = {
-                            "match_id": match_id,
-                            "team_id": team_id,
-                            "is_home": is_home,
-                            "xg": s.get("xg"),
-                            "xga": s.get("xga"),
-                            "shots": s.get("shots"),
-                            "shots_on_target": s.get("shots_on_target"),
-                            "shots_on_target_pct": s.get("shots_on_target_pct"),
-                            "corners": s.get("corners"),
-                            "fouls": s.get("fouls"),
-                            "crosses": s.get("crosses"),
-                            "touches": s.get("touches"),
-                            "tackles": s.get("tackles"),
-                            "interceptions": s.get("interceptions"),
-                            "aerials_won": s.get("aerials_won"),
-                            "clearances": s.get("clearances"),
-                            "long_balls": s.get("long_balls"),
-                            "passes": s.get("passes"),
-                            "passes_completed": s.get("passes_completed"),
-                            "pass_accuracy": s.get("pass_accuracy"),
-                            "saves": s.get("saves"),
-                            "saves_total": s.get("saves_total"),
-                            "saves_pct": s.get("saves_pct"),
-                            "yellow": s.get("yellow"),
-                            "red": s.get("red"),
-                            "possession": s.get("possession"),
-                        }
+                if f["url"]:
+                    match_stats = parse_match_report(f["url"])
+                    match_stats["home"]["xga"] = match_stats["away"].get("xg")
+                    match_stats["away"]["xga"] = match_stats["home"].get("xg")
+                    for is_home, team_id, side in [
+                        (1, home_id, "home"),
+                        (0, away_id, "away"),
+                    ]:
+                        stats = {k: match_stats.get(side, {}).get(k) for k in STAT_KEYS}
+                        stats.update(
+                            {
+                                "match_id": match_id,
+                                "team_id": team_id,
+                                "is_home": is_home,
+                            }
+                        )
                         conn.execute(
                             text(
                                 """
                                 INSERT INTO team_match_stats (
-                                    match_id, team_id, is_home, xg, xga, shots, shots_on_target, shots_on_target_pct,
-                                    corners, fouls, crosses, touches, tackles, interceptions, aerials_won, clearances,
-                                    long_balls, passes, passes_completed, pass_accuracy, saves, saves_total, saves_pct,
-                                    yellow, red, possession
+                                    match_id, team_id, is_home,
+                                    xg, xga, shots, shots_on_target, shots_on_target_pct, corners, fouls,
+                                    yellow, red, possession, crosses, touches, tackles, interceptions,
+                                    aerials_won, clearances, long_balls, passes, passes_completed,
+                                    pass_accuracy, saves, saves_total, save_pct
                                 ) VALUES (
-                                    :match_id, :team_id, :is_home, :xg, :xga, :shots, :shots_on_target, :shots_on_target_pct,
-                                    :corners, :fouls, :crosses, :touches, :tackles, :interceptions, :aerials_won, :clearances,
-                                    :long_balls, :passes, :passes_completed, :pass_accuracy, :saves, :saves_total, :saves_pct,
-                                    :yellow, :red, :possession
+                                    :match_id, :team_id, :is_home,
+                                    :xg, :xga, :shots, :shots_on_target, :shots_on_target_pct, :corners, :fouls,
+                                    :yellow, :red, :possession, :crosses, :touches, :tackles, :interceptions,
+                                    :aerials_won, :clearances, :long_balls, :passes, :passes_completed,
+                                    :pass_accuracy, :saves, :saves_total, :save_pct
                                 )
                                 ON CONFLICT(match_id, team_id) DO UPDATE SET
                                     xg=excluded.xg,
@@ -346,6 +373,9 @@ def scrape_league(league_name: str, gender: str) -> None:
                                     shots_on_target_pct=excluded.shots_on_target_pct,
                                     corners=excluded.corners,
                                     fouls=excluded.fouls,
+                                    yellow=excluded.yellow,
+                                    red=excluded.red,
+                                    possession=excluded.possession,
                                     crosses=excluded.crosses,
                                     touches=excluded.touches,
                                     tackles=excluded.tackles,
@@ -358,13 +388,10 @@ def scrape_league(league_name: str, gender: str) -> None:
                                     pass_accuracy=excluded.pass_accuracy,
                                     saves=excluded.saves,
                                     saves_total=excluded.saves_total,
-                                    saves_pct=excluded.saves_pct,
-                                    yellow=excluded.yellow,
-                                    red=excluded.red,
-                                    possession=excluded.possession
+                                    save_pct=excluded.save_pct
                                 """
                             ),
-                            params,
+                            stats,
                         )
 
 
