@@ -2,8 +2,22 @@ import json
 from pathlib import Path
 from functools import lru_cache
 from rapidfuzz import process
-import requests
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException
+
+
+def create_driver():
+    opts= Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0 Safari/537.36"
+    )
+    return webdriver.Chrome(options=opts)
+
 
 # mapping official fbref competition names to short aliases
 league_mapping = {
@@ -106,31 +120,36 @@ def save_cache(data: dict, cache_file: Path) -> None:
 
 def scrape_league_links():
     url = "https://fbref.com/en/comps/"
-    response = requests.get(url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser')
+    driver = create_driver()
+    driver.get(url)
 
     men_league_dict, women_league_dict = {}, {}  # return 2 empty dictionaries
 
     for table_id in ['comps_1_fa_club_league_senior', 'comps_2_fa_club_league_senior']:
-        # it find the table contatining top tier and second tier information
-        table = soup.find('table', {'id: table_id'})
-        if not table:
+        try:
+            table = driver.find_element(By.ID, table_id)
+        except NoSuchElementException:
             continue
-        # loop through all rows in the table to extract league names, URLs, and genders
-        for rows in table.find('tbody').find_all('tr'):
-            cols = rows.find_all('td')
-            headers = rows.find_all('th')
-            if not cols or headers:
-                continue
-            gender = cols[0].text.strip()
-            link_tag = headers[0].find('a')
-            if not link_tag:
-                continue
-            league_name = link_tag.text.strip()
-            league_url = 'https://fbref.com' + link_tag['href']
-            target = men_league_dict if gender == 'M' else women_league_dict
-            target[league_name] = {"url": league_url, "gender": gender}
+
+        rows = table.find_element(By.CSS_SELECTOR, "tbody tr")
+        for row in rows:
+        cols = row.find_elements(By.TAG_NAME, "td")
+        headers = row.find_elements(By.TAG_NAME, "th")
+        if not cols or not headers:
+            continue
+        gender = cols[0].text.strip()
+
+        try:
+            link_tag = headers[0].find_element(By.TAG_NAME, "a")
+        except NoSuchElementException:
+            continue
+
+        league_name = link_tag.text.strip()
+        league_url = link_tag.get_attribute("href")
+        target = men_league_dict if gender == 'M' else women_league_dict
+        target[league_name] = {"url": league_url, "gender": gender}
+
+    driver.quit()
     return men_league_dict, women_league_dict
 
 
@@ -167,18 +186,22 @@ def scrape_season_links(league_url: str) -> dict:
     """
     function to scrape league links from fbref's main competitions page
     """
-    print(f"League URL: {league_url}")  # debugging
-    response = requests.get(league_url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser')
-    seasons_table = soup.find('table', {id: 'seasons'})
+    driver = create_driver()
+    driver.get(league_url)
     seasons_dict = {}
-    if not seasons_table:
-        return seasons_dict
-    for row in seasons_table.find('tbody').find_all('th'):
-        link = row.find('a')
-        if link:
-            seasons_dict[link.text.strip()] = 'https://fbref.com' + link['href']
+    try:
+        table = driver.find_element(By.ID, 'seasons')
+        rows = table.find_elements(By.CSS_SELECTOR, 'tbody th')
+        for row in rows:
+            try:
+                link = row.find_element(By.TAG_NAME, 'a')
+                seasons_dict[link.text.strip()] = link.get_attribute('href')
+            except NoSuchElementException:
+                continue
+    except NoSuchElementException:
+        pass
+    finally:
+        driver.quit()
     return seasons_dict
 
 
@@ -196,14 +219,14 @@ def get_season_links(cache_file: str, league_url: str) -> dict:
 
 
 def get_scores_and_fixtures_url(competition_url: str):
-    # send a request to competition page
-    response = requests.get(competition_url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser')
-    inner_nav = soup.find('div', {'id': 'inner_nav'})
-    if not inner_nav:
+    driver = create_driver()
+    driver.get(competition_url)
+    try:
+        inner_nav = driver.find_element(By.ID, 'inner_nav')
+        link = inner_nav.find_element(By.LINK_TEXT, "Scores & Fixtures")
+        return link.get_attribute('href')
+    except NoSuchElementException:
         return None
-    link = inner_nav.find('a', string="Scores & Fixtures")
-    if not link:
-        return None
-    return 'https://fbref.com' + link['href']
+    finally:
+        driver.quit()
+

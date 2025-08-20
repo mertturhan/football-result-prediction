@@ -1,11 +1,11 @@
 from pathlib import Path
-import requests
-from bs4 import BeautifulSoup
-from sqlalchemy import text
 import logging
-from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url
+from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url, get_league_links, create_driver
 from src.db import get_engine, upsert_league, upsert_team
 from src.ids import formalize_team_name, produce_match_id
+from sqlalchemy import text
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,37 +16,43 @@ START_SEASON_YEAR = 2010
 def parse_fixtures_table(fixtures_url: str):
     """Return a list of match dicts from a Scores & Fixtures page."""
     logger.debug("Fetching fixtures from %s", fixtures_url)
-    resp = requests.get(fixtures_url)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    table = soup.find("table")
+    driver = create_driver()
     fixtures = []
-    if not table or not table.tbody:
+    try:
+        driver.get(fixtures_url)
+        table = driver.find_element(By.TAG_NAME, "table")
+        rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+        for row in rows:
+            classes = row.get_attribute("class") or ""
+            if "spacer" in classes:
+                continue
+            try:
+                date_cell = row.find_element(By.CSS_SELECTOR, "th[data-stat='date']")
+            except NoSuchElementException:
+                continue
+            match_date = date_cell.text.strip()
+            if not match_date:
+                continue
+            home = row.find_element(By.CSS_SELECTOR, "td[data-stat='home_team']").text.strip()
+            away = row.find_element(By.CSS_SELECTOR, "td[data-stat='away_team']").text.strip()
+            home_g = row.find_element(By.CSS_SELECTOR, "td[data-stat='home_score']").text.strip()
+            away_g = row.find_element(By.CSS_SELECTOR, "td[data-stat='away_score']").text.strip()
+            report_links = row.find_elements(By.CSS_SELECTOR, "td[data-stat='match_report'] a")
+            report_url = report_links[0].get_attribute("href") if report_links else None
+            fixtures.append(
+                {
+                    "date": match_date,
+                    "home": home,
+                    "away": away,
+                    "home_g": int(home_g) if home_g else None,
+                    "away_g": int(away_g) if away_g else None,
+                    "url": report_url,
+                }
+            )
+    except NoSuchElementException:
         logger.warning("No fixtures table found at %s", fixtures_url)
-        return fixtures
-    for row in table.tbody.find_all("tr"):
-        if row.get("class") and "spacer" in row.get("class"):
-            continue
-        date_cell = row.find("th", {"data-stat": "date"})
-        if not date_cell or not date_cell.text.strip():
-            continue
-        match_date = date_cell.text.strip()
-        home = row.find("td", {"data-stat": "home_team"}).text.strip()
-        away = row.find("td", {"data-stat": "away_team"}).text.strip()
-        home_g = row.find("td", {"data-stat": "home_score"}).text.strip()
-        away_g = row.find("td", {"data-stat": "away_score"}).text.strip()
-        report = row.find("td", {"data-stat": "match_report"})
-        report_url = None
-        if report and report.find("a"):
-            report_url = "https://fbref.com" + report.find("a")["href"]
-        fixtures.append({
-            "date": match_date,
-            "home": home,
-            "away": away,
-            "home_g": int(home_g) if home_g else None,
-            "away_g": int(away_g) if away_g else None,
-            "url": report_url,
-        })
+    finally:
+        driver.quit()
     logger.info("Parsed %d fixtures from %s", len(fixtures), fixtures_url)
     return fixtures
 
@@ -125,3 +131,16 @@ def scrape_league(league_name: str, gender: str) -> None:
                     },
                 )
 
+
+def main() -> None:
+    cache_root = Path("data/cache") / "Men"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    leagues_cache = cache_root / "league_links.json"
+    men_leagues, _ = get_league_links(str(leagues_cache))
+    for league_name in league_mapping:
+        if league_name in men_leagues:
+            scrape_league(league_name, "M")
+
+
+if __name__ == "__main__":
+    main()
