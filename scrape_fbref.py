@@ -1,6 +1,7 @@
 from pathlib import Path
 import logging
-from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url, get_league_links, create_driver
+from utils import league_mapping, get_closest_league, get_season_links, get_scores_and_fixtures_url, get_league_links, \
+    create_driver, rate_limited_get
 from src.db import get_engine, upsert_league, upsert_team
 from src.ids import formalize_team_name, produce_match_id
 from sqlalchemy import text
@@ -19,7 +20,7 @@ def parse_fixtures_table(fixtures_url: str):
     driver = create_driver()
     fixtures = []
     try:
-        driver.get(fixtures_url)
+        rate_limited_get(driver, fixtures_url)
         table = driver.find_element(By.TAG_NAME, "table")
         rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
         for row in rows:

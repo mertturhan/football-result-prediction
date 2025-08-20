@@ -1,21 +1,34 @@
 import json
 from pathlib import Path
 from functools import lru_cache
+import time
 from rapidfuzz import process
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 
+REQUEST_INTERVAL = 10
+_last_request_time = 0.0
+
+
+def rate_limited_get(driver, url: str) -> None:
+    global _last_request_time
+    elapsed = time.time() - _last_request_time
+    if elapsed < REQUEST_INTERVAL:
+        time.sleep(REQUEST_INTERVAL - elapsed)
+    driver.get(url)
+    _last_request_time = time.time()
+
 
 def create_driver():
     opts= Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0 Safari/537.36"
-    )
+    #opts.add_argument("--headless")
+    #opts.add_argument("--no-sandbox")
+    #opts.add_argument("--disable-dev-shm-usage")
+    #opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    #    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0 Safari/537.36"
+    #)
     return webdriver.Chrome(options=opts)
 
 
@@ -133,8 +146,8 @@ def scrape_league_links():
 
         rows = table.find_element(By.CSS_SELECTOR, "tbody tr")
         for row in rows:
-        cols = row.find_elements(By.TAG_NAME, "td")
-        headers = row.find_elements(By.TAG_NAME, "th")
+            cols = row.find_elements(By.TAG_NAME, "td")
+            headers = row.find_elements(By.TAG_NAME, "th")
         if not cols or not headers:
             continue
         gender = cols[0].text.strip()
@@ -220,7 +233,7 @@ def get_season_links(cache_file: str, league_url: str) -> dict:
 
 def get_scores_and_fixtures_url(competition_url: str):
     driver = create_driver()
-    driver.get(competition_url)
+    rate_limited_get(driver, competition_url)
     try:
         inner_nav = driver.find_element(By.ID, 'inner_nav')
         link = inner_nav.find_element(By.LINK_TEXT, "Scores & Fixtures")
