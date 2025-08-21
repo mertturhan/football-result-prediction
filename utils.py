@@ -302,7 +302,7 @@ def scrape_match_links(fixtures_url: str):
     return fixtures
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=512)
 def get_match_links(cache_file: str, fixtures_url: str):
     """Return cached match info for a season."""
     path = Path(cache_file)

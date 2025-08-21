@@ -11,7 +11,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import re
-from bs4 import BeautifulSoup, Comment
+
 
 
 
@@ -45,37 +45,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 START_SEASON_YEAR = 2010
-
-
-def _table_from_comment(driver, wrapper_id: str):
-    """Return a BeautifulSoup table extracted from commented HTML.
-
-    Some FBref pages expose tables directly without the ``all_`` wrapper.
-    This helper now checks for both variants and gracefully returns ``None``
-    if neither is found instead of raising an exception that bubbles up
-    through Selenium.
-    """
-
-    # First try the commented-out wrapper (``all_<id>``)
-    wrapper = driver.find_elements(By.ID, f"all_{wrapper_id}")
-    if wrapper:
-        html = wrapper[0].get_attribute("innerHTML")
-        soup = BeautifulSoup(html, "html.parser")
-        comment = next((c for c in soup.children if isinstance(c, Comment)), None)
-        return (
-            BeautifulSoup(comment, "html.parser").find("table")
-            if comment
-            else None
-        )
-
-    # Fall back to a directly exposed table
-    wrapper = driver.find_elements(By.ID, wrapper_id)
-    if wrapper:
-        html = wrapper[0].get_attribute("innerHTML")
-        soup = BeautifulSoup(html, "html.parser")
-        return soup.find("table") or soup
-
-    return None
 
 
 def parse_fixtures_table(fixtures_url: str):
@@ -171,115 +140,138 @@ def parse_match_report(report_url: str):
         rate_limited_get(driver, report_url)
         # top stats table
         try:
-            table = _table_from_comment(driver, "team_stats")
-            if table:
-                rows = table.find_all("tr")
-                for row in rows:
-                    try:
-                        label_cell = row.find("th")
-                        label = label_cell.get_text(strip=True).lower() if label_cell else ""
-                        cells = row.find_all("td")
-                        if len(cells) < 2:
-                            continue
-                        home_txt = cells[0].get_text(strip=True)
-                        away_txt = cells[-1].get_text(strip=True)
-                    except Exception:
-                        continue
-                    if label == "possession":
-                        stats["home"]["possession"] = _parse_percent(home_txt)
-                        stats["away"]["possession"] = _parse_percent(away_txt)
-                    elif label == "passing accuracy":
-                        h_made, h_tot, h_pct = _parse_ratio(home_txt)
-                        a_made, a_tot, a_pct = _parse_ratio(away_txt)
-                        stats["home"].update(
-                            {
-                                "passes_completed": h_made,
-                                "passes": h_tot,
-                                "pass_accuracy": h_pct,
-                            }
-                        )
-                        stats["away"].update(
-                            {
-                                "passes_completed": a_made,
-                                "passes": a_tot,
-                                "pass_accuracy": a_pct,
-                            }
-                        )
-                    elif label == "shots on target":
-                        h_made, h_tot, h_pct = _parse_ratio(home_txt)
-                        a_made, a_tot, a_pct = _parse_ratio(away_txt)
-                        stats["home"].update(
-                            {
-                                "shots_on_target": h_made,
-                                "shots": h_tot,
-                                "shots_on_target_pct": h_pct,
-                            }
-                        )
-                        stats["away"].update(
-                            {
-                                "shots_on_target": a_made,
-                                "shots": a_tot,
-                                "shots_on_target_pct": a_pct,
-                            }
-                        )
-                    elif label == "saves":
-                        h_made, h_tot, h_pct = _parse_ratio(home_txt)
-                        a_made, a_tot, a_pct = _parse_ratio(away_txt)
-                        stats["home"].update(
-                            {
-                                "saves": h_made,
-                                "saves_total": h_tot,
-                                "save_pct": h_pct,
-                            }
-                        )
-                        stats["away"].update(
-                            {
-                                "saves": a_made,
-                                "saves_total": a_tot,
-                                "save_pct": a_pct,
-                            }
-                        )
-                    elif label == "cards":
-                        stats["home"]["yellow"] = len(
-                            cells[0].select(".yellow_card")
-                        )
-                        stats["home"]["red"] = len(cells[0].select(".red_card"))
-                        stats["away"]["yellow"] = len(
-                            cells[-1].select(".yellow_card")
-                        )
-                        stats["away"]["red"] = len(cells[-1].select(".red_card"))
-            else:
-                logger.warning("team_stats table not found on %s", report_url)
-        except Exception as e:
-            logger.warning("Could not recover team_stats table: %s", e)
-        # extra stats table
+            table = driver.find_element(By.XPATH, "//div[@id='team_stats']//table")
+            rows = table.find_elements(By.XPATH, ".//tr")
+            i = 0
+            while i < len(rows):
+                row = rows[i]
+                ths = row.find_elements(By.TAG_NAME, "th")
+                tds = row.find_elements(By.TAG_NAME, "td")
+                label = None
+                cells = None
+                if len(ths) == 1 and len(tds) == 0 and i + 1 < len(rows):
+                    # label row followed by data row
+                    label = ths[0].text.strip().lower()
+                    cells = rows[i + 1].find_elements(By.TAG_NAME, "td")
+                    i += 2
+                elif len(ths) == 1 and len(tds) >= 2:
+                    # label and data in same row
+                    label = ths[0].text.strip().lower()
+                    cells = tds
+                    i += 1
+                else:
+                    i += 1
+                    continue
+                if len(cells) < 2:
+                    continue
+                home_txt = cells[0].text.strip()
+                away_txt = cells[-1].text.strip()
+                logger.debug("Row '%s': home='%s' away='%s'", label, home_txt, away_txt)
+                if label == "possession":
+                    stats["home"]["possession"] = _parse_percent(home_txt)
+                    stats["away"]["possession"] = _parse_percent(away_txt)
+                elif label == "passing accuracy":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "passes_completed": h_made,
+                            "passes": h_tot,
+                            "pass_accuracy": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "passes_completed": a_made,
+                            "passes": a_tot,
+                            "pass_accuracy": a_pct,
+                        }
+                    )
+                elif label == "shots on target":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "shots_on_target": h_made,
+                            "shots": h_tot,
+                            "shots_on_target_pct": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "shots_on_target": a_made,
+                            "shots": a_tot,
+                            "shots_on_target_pct": a_pct,
+                        }
+                    )
+                elif label == "saves":
+                    h_made, h_tot, h_pct = _parse_ratio(home_txt)
+                    a_made, a_tot, a_pct = _parse_ratio(away_txt)
+                    stats["home"].update(
+                        {
+                            "saves": h_made,
+                            "saves_total": h_tot,
+                            "save_pct": h_pct,
+                        }
+                    )
+                    stats["away"].update(
+                        {
+                            "saves": a_made,
+                            "saves_total": a_tot,
+                            "save_pct": a_pct,
+                        }
+                    )
+                elif label == "cards":
+                    stats["home"]["yellow"] = len(
+                        cells[0].find_elements(By.CSS_SELECTOR, ".yellow_card")
+                    )
+                    stats["home"]["red"] = len(
+                        cells[0].find_elements(By.CSS_SELECTOR, ".red_card")
+                    )
+                    stats["away"]["yellow"] = len(
+                        cells[-1].find_elements(By.CSS_SELECTOR, ".yellow_card")
+                    )
+                    stats["away"]["red"] = len(
+                        cells[-1].find_elements(By.CSS_SELECTOR, ".red_card")
+                    )
+                    logger.debug(
+                        "Parsed cards: home_yellow=%s home_red=%s away_yellow=%s away_red=%s",
+                        stats["home"].get("yellow"),
+                        stats["home"].get("red"),
+                        stats["away"].get("yellow"),
+                        stats["away"].get("red"),
+                    )
+        except NoSuchElementException:
+            logger.warning("team_stats table not found on %s", report_url)
+            # extra stats table
         try:
-            extra = _table_from_comment(driver, "team_stats_extra")
-            if extra:
-                rows = extra.find_all("tr")
-                label_map = {
-                    "fouls": "fouls",
-                    "corners": "corners",
-                    "crosses": "crosses",
-                    "touches": "touches",
-                    "tackles": "tackles",
-                    "interceptions": "interceptions",
-                    "aerials won": "aerials_won",
-                    "clearances": "clearances",
-                    "long balls": "long_balls",
-                    "xg": "xg",
-                }
-                for row in rows:
-                    try:
-                        label_cell = row.find("th")
-                        label = label_cell.get_text(strip=True).lower() if label_cell else ""
-                        if label not in label_map:
-                            continue
-                        cells = row.find_all("td")
+            extra = driver.find_element(By.XPATH, "//div[@id='team_stats_extra']")
+            rows = extra.find_elements(By.XPATH, ".//tr")
+            label_map = {
+                "fouls": "fouls",
+                "corners": "corners",
+                "crosses": "crosses",
+                "touches": "touches",
+                "tackles": "tackles",
+                "interceptions": "interceptions",
+                "aerials won": "aerials_won",
+                "clearances": "clearances",
+                "long balls": "long_balls",
+                "xg": "xg",
+            }
+            for row in rows:
+                try:
+                    label_el = row.find_elements(By.TAG_NAME, "th")
+                    if not label_el:
+                        continue
+                    label = label_el[0].text.strip().lower()
+                    if label not in label_map:
+                        continue
+                        cells = row.find_elements(By.TAG_NAME, "td")
                         if len(cells) < 2:
                             continue
-                        home_txt = cells[0].get_text(strip=True)
-                        away_txt = cells[-1].get_text(strip=True)
+                        home_txt = cells[0].text.strip()
+                        away_txt = cells[-1].text.strip()
                         key = label_map[label]
                         if key == "xg":
                             stats["home"][key] = _parse_percent(home_txt)
@@ -287,12 +279,16 @@ def parse_match_report(report_url: str):
                         else:
                             stats["home"][key] = _parse_number(home_txt)
                             stats["away"][key] = _parse_number(away_txt)
-                    except Exception:
-                        continue
-            else:
-                logger.warning("team_stats_extra table not found on %s", report_url)
-        except Exception as e:
-            logger.warning("Could not recover team_stats_extra table: %s", e)
+                        logger.debug(
+                            "Parsed %s: home=%s away=%s",
+                            label,
+                            stats["home"].get(key),
+                            stats["away"].get(key),
+                        )
+                except Exception:
+                    continue
+        except NoSuchElementException:
+            logger.warning("team_stats_extra table not found on %s", report_url)
     finally:
         driver.quit()
     return stats
