@@ -48,7 +48,7 @@ START_SEASON_YEAR = 2010
 
 
 def parse_fixtures_table(fixtures_url: str):
-    #Return a list of match dicts from a Scores & Fixtures page.
+    # Return a list of match dicts from a Scores & Fixtures page.
     logger.debug("Fetching fixtures from %s", fixtures_url)
     driver = create_driver()
     fixtures = []
@@ -224,15 +224,23 @@ def parse_match_report(report_url: str):
                 elif label == "cards":
                     stats["home"]["yellow"] = len(
                         cells[0].find_elements(By.CSS_SELECTOR, ".yellow_card")
+                    ) + len(
+                        cells[0].find_elements(By.CSS_SELECTOR, ".yellow_red_card")
                     )
                     stats["home"]["red"] = len(
                         cells[0].find_elements(By.CSS_SELECTOR, ".red_card")
+                    ) + len(
+                        cells[0].find_elements(By.CSS_SELECTOR, ".yellow_red_card")
                     )
                     stats["away"]["yellow"] = len(
                         cells[-1].find_elements(By.CSS_SELECTOR, ".yellow_card")
+                    ) + len(
+                        cells[-1].find_elements(By.CSS_SELECTOR, ".yellow_red_card")
                     )
                     stats["away"]["red"] = len(
                         cells[-1].find_elements(By.CSS_SELECTOR, ".red_card")
+                    ) + len(
+                        cells[-1].find_elements(By.CSS_SELECTOR, ".yellow_red_card")
                     )
                     logger.debug(
                         "Parsed cards: home_yellow=%s home_red=%s away_yellow=%s away_red=%s",
@@ -291,6 +299,7 @@ def parse_match_report(report_url: str):
             logger.warning("team_stats_extra table not found on %s", report_url)
     finally:
         driver.quit()
+    print(stats)
     return stats
 
 
@@ -326,7 +335,6 @@ def scrape_league(league_name: str, gender: str) -> None:
             if not fixtures_url:
                 logger.warning("No fixtures URL found for season %s", season_name)
                 continue
-            #fixtures = parse_fixtures_table(str(matches_cache), fixtures_url)
             season_dir = league_dir / season_name
             season_dir.mkdir(parents=True, exist_ok=True)
             matches_cache = season_dir / "match_links.json"
@@ -470,6 +478,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(debug=args.debug)
+
+
+
 
 
 #//*[@id="all_sched"]
