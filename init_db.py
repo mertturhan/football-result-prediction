@@ -38,4 +38,18 @@ if __name__ == "__main__":
                     con.execute(
                         f"ALTER TABLE team_match_stats ADD COLUMN {col} {col_type}"
                     )
+
+            # Backfill penalty shootout columns on the match table
+            match_existing = {
+                row[1] for row in con.execute("PRAGMA table_info(match)")
+            }
+            match_required = {
+                "home_penalty": "INTEGER",
+                "away_penalty": "INTEGER",
+            }
+            for col, col_type in match_required.items():
+                if col not in match_existing:
+                    con.execute(
+                        f"ALTER TABLE match ADD COLUMN {col} {col_type}"
+                    )
         print(f"Schema created at {db_path.resolve()}")
