@@ -11,6 +11,8 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import re
+from resume_state import ResumeState
+from pathlib import Path
 
 
 
@@ -45,6 +47,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 START_SEASON_YEAR = 2010
+
+def match_stats_exists(conn, match_id: str) -> bool:
+    row = conn.execute(
+        text("SELECT 1 FROM team_match_stats WHERE match_id=:{"mid": match_id})
+    ).first()
+    return row is not None
 
 
 def parse_fixtures_table(fixtures_url: str):
@@ -83,9 +91,26 @@ def parse_fixtures_table(fixtures_url: str):
             try:
                 score_text = row.find_element(By.XPATH, "./*[@data-stat='score']").text.strip()
                 if score_text:
-                    home_g_str, away_g_str = re.split(r"[-–—]", score_text)  # handles hyphen, en dash, em dash
-                    home_g = int(home_g_str)
-                    away_g = int(away_g_str)
+                    parts = re.split(r"[-–—]", score_text)
+                    if len(parts) >= 2:
+                        try:
+                            home_g, away_g = int(parts[0]), int(parts[1])
+                        except ValueError:
+                            logger.warning(
+                                "Invalid score numbers '%s' for %s vs %s",
+                                score_text,
+                                home,
+                                away,
+                            )
+                            home_g = away_g = None
+                    else:
+                        logger.warning(
+                            "Unexpected score format '%s' for %s vs %s",
+                            score_text,
+                            home,
+                            away,
+                        )
+                        home_g = away_g = None
                 else:
                     home_g = away_g = None
             except NoSuchElementException:
@@ -135,10 +160,36 @@ def _parse_number(text: str) -> int | None:
 def parse_match_report(report_url: str):
     """Return per-team stats from a match report page."""
     stats = {"home": {}, "away": {}}
+    penalties = (None, None)
     driver = create_driver()
     try:
         rate_limited_get(driver, report_url)
+        # extract penalty shootout info from scorebox if present
+        try:
+            scorebox = driver.find_element(By.XPATH, "//div[contains(@class,'scorebox')]")
+            meta_divs = scorebox.find_elements(By.XPATH, ".//div")
+            for div in meta_divs:
+                txt = div.text.strip().lower()
+                if "penalties" in txt:
+                    nums = re.findall(r"\d+", txt)
+                    if len(nums) >= 2:
+                        penalties = (int(nums[0]), int(nums[1]))
+                    break
+        except NoSuchElementException:
+            pass
         # top stats table
+        try:
+            xg_divs = driver.find_element(By.XPATH, "//div[@class='score_xg']")
+            if len(xg_divs) > 2:
+                stats["home"]["xg"] = float(xg_divs[0].text.strip())
+                stats["home"]["xg"] = float(xg_divs[1].text.strip())
+                logger.debug(
+                    "Parsed scoreboard xG: home=%s away=%s",
+                    stats["home"].get("xg"),
+                    stats["away"].get("xg")
+                )
+        except Exception:
+            logger.debug("score_xg elements not found on %s", report_url)
         try:
             table = driver.find_element(By.XPATH, "//div[@id='team_stats']//table")
             rows = table.find_elements(By.XPATH, ".//tr")
@@ -265,7 +316,6 @@ def parse_match_report(report_url: str):
                 "aerials won": "aerials_won",
                 "clearances": "clearances",
                 "long balls": "long_balls",
-                "xg": "xg",
             }
             for row in rows:
                 try:
@@ -281,12 +331,8 @@ def parse_match_report(report_url: str):
                         home_txt = cells[0].text.strip()
                         away_txt = cells[-1].text.strip()
                         key = label_map[label]
-                        if key == "xg":
-                            stats["home"][key] = _parse_percent(home_txt)
-                            stats["away"][key] = _parse_percent(away_txt)
-                        else:
-                            stats["home"][key] = _parse_number(home_txt)
-                            stats["away"][key] = _parse_number(away_txt)
+                        stats["home"][key] = _parse_number(home_txt)
+                        stats["away"][key] = _parse_number(away_txt)
                         logger.debug(
                             "Parsed %s: home=%s away=%s",
                             label,
@@ -299,8 +345,8 @@ def parse_match_report(report_url: str):
             logger.warning("team_stats_extra table not found on %s", report_url)
     finally:
         driver.quit()
-    print(stats)
-    return stats
+    #print(stats)
+    return stats, penalties
 
 
 def scrape_league(league_name: str, gender: str) -> None:
@@ -322,8 +368,9 @@ def scrape_league(league_name: str, gender: str) -> None:
     seasons = get_season_links(str(seasons_cache), info["url"])
 
     engine = get_engine(gender_full.lower())
-    with engine.begin() as conn:
-        upsert_league(conn, league_alias, closest)
+    with engine.connect() as conn:
+        with conn.begin():
+            upsert_league(conn, league_alias, closest)
         for season_name, season_url in seasons.items():
             start_year = int(season_name.split("-")[0])
             if start_year < START_SEASON_YEAR:
@@ -338,125 +385,173 @@ def scrape_league(league_name: str, gender: str) -> None:
             season_dir = league_dir / season_name
             season_dir.mkdir(parents=True, exist_ok=True)
             matches_cache = season_dir / "match_links.json"
+            state = ResumeState(season_dir / "progress.json")
+
             fixtures = get_match_links(str(matches_cache), fixtures_url)
             logger.info(
                 "Processing %d fixtures for season %s", len(fixtures), season_name
             )
             for f in fixtures:
-                home_id = formalize_team_name(f["home"])
-                away_id = formalize_team_name(f["away"])
-                upsert_team(conn, home_id, f["home"])
-                upsert_team(conn, away_id, f["away"])
-                match_id = produce_match_id(
-                    league_alias,
-                    season_name,
-                    f["date"],
-                    home_id,
-                    away_id,
-                )
-                status = "played" if f["home_g"] is not None else "scheduled"
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO match (
-                            match_id, league_id, season, match_date, status,
-                            home_team_id, away_team_id, home_goals, away_goals, source_url
-                        ) VALUES (
-                            :match_id, :league_id, :season, :match_date, :status,
-                            :home_team_id, :away_team_id, :home_goals, :away_goals, :source_url
+                try:
+                    with conn.begin():
+                        home_id = formalize_team_name(f["home"])
+                        away_id = formalize_team_name(f["away"])
+                        upsert_team(conn, home_id, f["home"])
+                        upsert_team(conn, away_id, f["away"])
+                        match_id = produce_match_id(
+                            league_alias,
+                            season_name,
+                            f["date"],
+                            home_id,
+                            away_id,
                         )
-                        ON CONFLICT(match_id) DO NOTHING
-                        """
-                    ),
-                    {
-                        "match_id": match_id,
-                        "league_id": league_alias,
-                        "season": season_name,
-                        "match_date": f["date"],
-                        "status": status,
-                        "home_team_id": home_id,
-                        "away_team_id": away_id,
-                        "home_goals": f["home_g"],
-                        "away_goals": f["away_g"],
-                        "source_url": f["url"],
-                    },
-                )
-                if f["url"]:
-                    match_stats = parse_match_report(f["url"])
-                    logger.debug(
-                        "Scraped stats for %s vs %s: %s",
-                        f["home"],
-                        f["away"],
-                        match_stats,
-                    )
-                    match_stats["home"]["xga"] = match_stats["away"].get("xg")
-                    match_stats["away"]["xga"] = match_stats["home"].get("xg")
-                    for is_home, team_id, side in [
-                        (1, home_id, "home"),
-                        (0, away_id, "away"),
-                    ]:
-                        stats = {k: match_stats.get(side, {}).get(k) for k in STAT_KEYS}
-                        missing = {
-                            k for k in STAT_KEYS if match_stats.get(side, {}).get(k) is None
-                        }
-                        if missing:
-                            logger.debug(
-                                "Missing stats %s for %s from %s",
-                                ", ".join(sorted(missing)),
-                                side,
-                                f["url"],
-                            )
-                        stats.update(
-                            {
-                                "match_id": match_id,
-                                "team_id": team_id,
-                                "is_home": is_home,
-                            }
+
+                        if state.is_done(match_id):
+                            logger.debug("Skipping %s (marked done in progress file)", match_id)
+                            continue
+
+                        if match_stats_exists(conn, match_id):
+                            logger.debug("Skipping %s (stats already exist in DB)", match_id)
+                            state.mark_done(match_id)
+                            continue
+                        
+                        status = (
+                            "played" if f["home_g"] is not None else "scheduled"
                         )
                         conn.execute(
                             text(
                                 """
-                                INSERT INTO team_match_stats (
-                                    match_id, team_id, is_home,
-                                    xg, xga, shots, shots_on_target, shots_on_target_pct, corners, fouls,
-                                    yellow, red, possession, crosses, touches, tackles, interceptions,
-                                    aerials_won, clearances, long_balls, passes, passes_completed,
-                                    pass_accuracy, saves, saves_total, save_pct
+                                INSERT INTO match (
+                                    match_id, league_id, season, match_date, status,
+                                    home_team_id, away_team_id, home_goals, away_goals, home_penalty,
+                                    away_penalty, source_url
                                 ) VALUES (
-                                    :match_id, :team_id, :is_home,
-                                    :xg, :xga, :shots, :shots_on_target, :shots_on_target_pct, :corners, :fouls,
-                                    :yellow, :red, :possession, :crosses, :touches, :tackles, :interceptions,
-                                    :aerials_won, :clearances, :long_balls, :passes, :passes_completed,
-                                    :pass_accuracy, :saves, :saves_total, :save_pct
+                                    :match_id, :league_id, :season, :match_date, :status,
+                                    :home_team_id, :away_team_id, :home_goals, :away_goals, :home_penalty,
+                                    :away_penalty, :source_url
                                 )
-                                ON CONFLICT(match_id, team_id) DO UPDATE SET
-                                    xg=excluded.xg,
-                                    xga=excluded.xga,
-                                    shots=excluded.shots,
-                                    shots_on_target=excluded.shots_on_target,
-                                    shots_on_target_pct=excluded.shots_on_target_pct,
-                                    corners=excluded.corners,
-                                    fouls=excluded.fouls,
-                                    yellow=excluded.yellow,
-                                    red=excluded.red,
-                                    possession=excluded.possession,
-                                    crosses=excluded.crosses,
-                                    touches=excluded.touches,
-                                    tackles=excluded.tackles,
-                                    interceptions=excluded.interceptions,
-                                    aerials_won=excluded.aerials_won,
-                                    clearances=excluded.clearances,
-                                    long_balls=excluded.long_balls,
-                                    passes=excluded.passes,
-                                    passes_completed=excluded.passes_completed,
-                                    pass_accuracy=excluded.pass_accuracy,
-                                    saves=excluded.saves,
-                                    saves_total=excluded.saves_total,
-                                    save_pct=excluded.save_pct
+                                ON CONFLICT(match_id) DO NOTHING
                                 """
                             ),
-                            stats,
+                            {
+                                "match_id": match_id,
+                                "league_id": league_alias,
+                                "season": season_name,
+                                "match_date": f["date"],
+                                "status": status,
+                                "home_team_id": home_id,
+                                "away_team_id": away_id,
+                                "home_goals": f["home_g"],
+                                "away_goals": f["away_g"],
+                                "home_penalty": None,
+                                "away_penalty": None,
+                                "source_url": f["url"],
+                            },
                         )
+                        if f["url"]:
+                            match_stats, penalties = parse_match_report(f["url"])
+                            logger.debug(
+                                "Scraped stats for %s vs %s: %s",
+                                f["home"],
+                                f["away"],
+                                match_stats,
+                            )
+                            # Update penalty shootout results if present
+                            if any(p is not None for p in penalties):
+                                conn.execute(
+                                    text(
+                                        """
+                                        UPDATE match
+                                        SET home_penalty=:home_penalty, away_penalty=:away_penalty
+                                        WHERE match_id=:match_id
+                                        """
+                                    ),
+                                    {
+                                        "match_id": match_id,
+                                        "home_penalty": penalties[0],
+                                        "away_penalty": penalties[1],
+                                    },
+                                )
+                            match_stats["home"]["xga"] = match_stats["away"].get("xg")
+                            match_stats["away"]["xga"] = match_stats["home"].get("xg")
+                            for is_home, team_id, side in [
+                                (1, home_id, "home"),
+                                (0, away_id, "away"),
+                            ]:
+                                stats = {
+                                    k: match_stats.get(side, {}).get(k) for k in STAT_KEYS
+                                }
+                                missing = {
+                                    k
+                                    for k in STAT_KEYS
+                                    if match_stats.get(side, {}).get(k) is None
+                                }
+                                if missing:
+                                    logger.debug(
+                                        "Missing stats %s for %s from %s",
+                                        ", ".join(sorted(missing)),
+                                        side,
+                                        f["url"],
+                                    )
+                                stats.update(
+                                    {
+                                        "match_id": match_id,
+                                        "team_id": team_id,
+                                        "is_home": is_home,
+                                    }
+                                )
+                                conn.execute(
+                                    text(
+                                        """
+                                        INSERT INTO team_match_stats (
+                                            match_id, team_id, is_home,
+                                            xg, xga, shots, shots_on_target, shots_on_target_pct, corners, fouls,
+                                            yellow, red, possession, crosses, touches, tackles, interceptions,
+                                            aerials_won, clearances, long_balls, passes, passes_completed,
+                                            pass_accuracy, saves, saves_total, save_pct
+                                        ) VALUES (
+                                            :match_id, :team_id, :is_home,
+                                            :xg, :xga, :shots, :shots_on_target, :shots_on_target_pct, :corners, :fouls,
+                                            :yellow, :red, :possession, :crosses, :touches, :tackles, :interceptions,
+                                            :aerials_won, :clearances, :long_balls, :passes, :passes_completed,
+                                            :pass_accuracy, :saves, :saves_total, :save_pct
+                                        )
+                                        ON CONFLICT(match_id, team_id) DO UPDATE SET
+                                            xg=excluded.xg,
+                                            xga=excluded.xga,
+                                            shots=excluded.shots,
+                                            shots_on_target=excluded.shots_on_target,
+                                            shots_on_target_pct=excluded.shots_on_target_pct,
+                                            corners=excluded.corners,
+                                            fouls=excluded.fouls,
+                                            yellow=excluded.yellow,
+                                            red=excluded.red,
+                                            possession=excluded.possession,
+                                            crosses=excluded.crosses,
+                                            touches=excluded.touches,
+                                            tackles=excluded.tackles,
+                                            interceptions=excluded.interceptions,
+                                            aerials_won=excluded.aerials_won,
+                                            clearances=excluded.clearances,
+                                            long_balls=excluded.long_balls,
+                                            passes=excluded.passes,
+                                            passes_completed=excluded.passes_completed,
+                                            pass_accuracy=excluded.pass_accuracy,
+                                            saves=excluded.saves,
+                                            saves_total=excluded.saves_total,
+                                            save_pct=excluded.save_pct
+                                        """
+                                    ),
+                                    stats,
+                                )
+                            state.mark_done(match_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to process fixture %s vs %s on %s",
+                        f.get("home"),
+                        f.get("away"),
+                        f.get("date"),
+                    )
 
 
 def main(debug: bool = True):
