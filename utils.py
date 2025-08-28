@@ -29,35 +29,36 @@ def rate_limited_get(driver, url: str) -> None:
 
 def create_driver():
     opts= Options()
-    #opts.add_argument("--headless")
-    #opts.add_argument("--no-sandbox")
-    #opts.add_argument("--disable-dev-shm-usage")
-    #opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    #    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0 Safari/537.36"
-    #)
+    opts.add_argument("--headless")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0 Safari/537.36"
+    )
     return webdriver.Chrome(options=opts)
 
 
 # mapping official fbref competition names to short aliases
 league_mapping = {
-    "2. Fußball-Bundesliga": "2. Bundesliga",
-    "A-League Men": "A-League",
-    "A-League Women": "A-League",
-    "Allsvenskan": "Allsvenskan",
-    "Austrian Football Bundesliga": "Bundesliga",
-    "Belgian Pro League": "Pro League A",
-    "Belgian Women's Super League": "Belgian WSL",
-    "Campeonato Brasileiro Série A": "Série A",
-    "Campeonato Brasileiro Série B": "Série B",
-    "Canadian Premier League": "CanPL",
-    "Categoría Primera A": "Primera A",
-    "Challenger Pro League": "Pro League B",
-    "Chilean Primera División": "Primera División",
-    "Chinese Football Association Super League": "Super League",
-    "CONCACAF Champions Cup": "CONCACAF CL",
-    "Copa Libertadores": "Libertadores",
-    "Copa Sudamericana": "Sudamericana",
-    "Croatian Football League": "HNL",
+    #"2. Fußball-Bundesliga": "2. Bundesliga",
+    #"A-League Men": "A-League",
+    #"A-League Women": "A-League",
+    #"Allsvenskan": "Allsvenskan",
+    #"Austrian Football Bundesliga": "Bundesliga",
+    #"Belgian Pro League": "Pro League A",
+    #"Belgian Women's Super League": "Belgian WSL",
+    #"Campeonato Brasileiro Série A": "Série A",
+    #"Campeonato Brasileiro Série B": "Série B",
+    #"Canadian Premier League": "CanPL",
+    #"Categoría Primera A": "Primera A",
+    #"Challenger Pro League": "Pro League B",
+    #"Chilean Primera División": "Primera División",
+    #"Chinese Football Association Super League": "Super League",
+    #"CONCACAF Champions Cup": "CONCACAF CL",
+    #"Copa Libertadores": "Libertadores",
+    #"Copa Sudamericana": "Sudamericana",
+    #"Croatian Football League": "HNL",
     "Czech First League": "Czech First League",
     "Danish Superliga": "Danish Superliga",
     "Danish Women's League": "Kvindeligaen",
@@ -273,9 +274,26 @@ def scrape_match_links(fixtures_url: str):
             try:
                 score_text = row.find_element(By.XPATH, "./*[@data-stat='score']").text.strip()
                 if score_text:
-                    home_g_str, away_g_str = re.split(r"[-–—]", score_text)
-                    home_g = int(home_g_str)
-                    away_g = int(away_g_str)
+                    parts = re.split(r"[-–—]", score_text)
+                    if len(parts) >= 2:
+                        try:
+                            home_g, away_g = int(parts[0]), int(parts[1])
+                        except ValueError:
+                            logger.warning(
+                                "Invalid score numbers '%s' for %s vs %s",
+                                score_text,
+                                home,
+                                away,
+                            )
+                            home_g = away_g = None
+                    else:
+                        logger.warning(
+                            "Unexpected score format '%s' for %s vs %s",
+                            score_text,
+                            home,
+                            away,
+                        )
+                        home_g = away_g = None
                 else:
                     home_g = away_g = None
             except NoSuchElementException:
